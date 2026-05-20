@@ -1,0 +1,93 @@
+---
+layout: archive
+title: "Members"
+permalink: /members/
+author_profile: true
+---
+
+{% include base_path %}
+
+<!-- Display Group PIs -->
+<h2>Group PI</h2>
+{% for member in site.members %}
+  {% if member.role != "PI" %}
+    {% continue %}
+  {% else %}
+     <div style="display:flex; margin:1rem 0;">
+    <img src="/images/members/{{ member.image }}" style="border-radius:50%; width:200px; height:175px; margin-right:1rem">
+      <div>
+        <h3>{{ member.name }}</h3>{{ member.title }} ({{ member.institution }})
+        <p><a href="{{ member.website }}">{{ member.name}}</a> joined Pomona and created the PCAL group in {{ member.joined }}.</p>
+      </div>
+    </div>
+  {% endif %}
+{% endfor %}
+
+
+
+<h2>Current Students</h2>
+{% for member in site.members %}
+  {% capture currTime %}{{ 'now' | date: "%s" | plus: 0 }}{% endcapture %}
+  {% capture graduationTime %}{{ member.graduation | date: "%s" | plus: 0 }}{% endcapture %}
+  {% if member.role == "student" and graduationTime > currTime %}
+     <div style="display:flex; margin:1rem 0;">
+    <img src="/images/members/{{ member.image }}" style="border-radius:50%; width:200px; height:175px; margin-right:1rem">
+      <div>
+        <h3>{{ member.name }}</h3> ({{ member.institution }}, Class of {{ member.gradyear }})
+        <!--<p>{{ member.firstname}} joined the PCAL group in {{ member.joined }}.</p>-->
+        <p> {{ member }} </p>
+      </div>
+    </div>
+  {% else %}
+    {% continue %}
+  {% endif %}
+{% endfor %}
+
+
+
+
+<h2>Alumni</h2>
+{% for member in site.members %}
+  {% capture currTime %}{{ 'now' | date: "%s" | plus: 0 }}{% endcapture %}
+  {% capture graduationTime %}{{ member.graduation | date: "%s" | plus: 0 }}{% endcapture %}
+  {% if member.role == "student" and graduationTime <= currTime %}
+     <div style="display:flex; margin:1rem 0;">
+    <img src="/images/members/{{ member.image }}" style="border-radius:50%; width:200px; height:175px; margin-right:1rem">
+      <div>
+        <h3>{{ member.name }}</h3> ({{ member.institution }}, Class of {{ member.gradyear }})
+        <!--<p>{{ member.firstname}} joined the PCAL group in {{ member.joined }}.</p>-->
+        <p> {{ member }} </p>
+      </div>
+    </div>
+  {% else %}
+    {% continue %}
+  {% endif %}
+{% endfor %}
+
+
+
+
+
+<!-- New style rendering if publication categories are defined -->
+<!-- {% if site.publication_category %}
+  {% for category in site.publication_category  %}
+    {% assign title_shown = false %}
+    {% for post in site.publications reversed %}
+      {% if post.category != category[0] %}
+        {% continue %}
+      {% endif %}
+      {% unless title_shown %}
+        <h2>{{ category[1].title }}</h2><hr />
+        {% assign title_shown = true %}
+      {% endunless %}
+      {% include archive-single.html %}
+    {% endfor %}
+  {% endfor %}
+{% else %}
+  {% for post in site.publications reversed %}
+    {% include archive-single.html %}
+  {% endfor %}
+{% endif %} -->
+
+
+

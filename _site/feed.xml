@@ -1,0 +1,267 @@
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="3.10.0">Jekyll</generator><link href="http://localhost:4000/feed.xml" rel="self" type="application/atom+xml" /><link href="http://localhost:4000/" rel="alternate" type="text/html" /><updated>2026-05-20T16:21:40+00:00</updated><id>http://localhost:4000/feed.xml</id><title type="html">Pomona Computer Architecture Lab</title><subtitle>PCAL main webpage</subtitle><author><name>Pomona Computer Architecture Lab</name><email>samuel.thomas@pomona.edu</email></author><entry><title type="html">Spring 2026 in Review</title><link href="http://localhost:4000/posts/2026/spring/semester-in-review-connor/" rel="alternate" type="text/html" title="Spring 2026 in Review" /><published>2026-05-13T00:00:00+00:00</published><updated>2026-05-13T00:00:00+00:00</updated><id>http://localhost:4000/posts/2026/spring/connor-end-of-semester</id><content type="html" xml:base="http://localhost:4000/posts/2026/spring/semester-in-review-connor/"><![CDATA[<p>This is a report of the research done by Connor Wang as an RA during the Spring 2026 semester.</p>
+
+<h1 id="gem5-parallelization">gem5 Parallelization</h1>
+
+<h2 id="overview">Overview</h2>
+<p>This project explores how to parallelize gem5 through microservicing. The original gem5 implementation executes events sequentially through the <code class="language-plaintext highlighter-rouge">serviceOne()</code> function, which both removes the next event from the event queue and then executes it. As a result, each event is serviced one at a time. The goal of this project is to separate the process of popping events from the queue and executing the popped events. Ideally, this split will allow multiple worker threads to pull events from the queue and process them in parallel.</p>
+
+<h2 id="approach">Approach</h2>
+<p>Our approach to parallelize gem5 is centered around multiple worker threads executing events at the same time as long as the events do not interact with the same simulated hardware component. To do this, the event queue logic is split into two steps, where one step pops the next event from queue and the second step executes the event. Since multiple threads could run at once, the implementation needs to prevent two threads from modifying the same hardware state at the same time. To handle this, we create a lock for each <code class="language-plaintext highlighter-rouge">event-&gt;name()</code> because in gem5 the event name corresponds to the hardware component associated with the event. The worker threads share the same event queue, with a global queue lock to protect the process of checking the queue. The lock per event protects the actual execution of each event. In theory, this means that multiple events can run in parallel as long as they are associated with different hardware components.</p>
+
+<h2 id="progress">Progress</h2>
+<p>The current implementation does not work. It fails the assert <code class="language-plaintext highlighter-rouge">(when &gt;= tick)</code> in <code class="language-plaintext highlighter-rouge">schedule</code> and <code class="language-plaintext highlighter-rouge">reschedule</code>. When commenting these asserts out, the functions do not run properly.</p>
+
+<p>To get gem5 to run properly, edit <code class="language-plaintext highlighter-rouge">simulationWorker</code> in <code class="language-plaintext highlighter-rouge">simulate.cc</code>.</p>
+
+<p>The working code that calls <code class="language-plaintext highlighter-rouge">serviceOne</code> is commented out, so uncomment this and comment out the calls to <code class="language-plaintext highlighter-rouge">popNextEvent</code> and <code class="language-plaintext highlighter-rouge">executePoppedEvent</code>.</p>
+
+<p>The functional lines have a comment before them that says:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">// this is WORKING simulate.cc line</span>
+</code></pre></div></div>
+
+<p>The test lines say:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">// this is for split serviceOne events (DOESNT WORK)</span>
+</code></pre></div></div>
+
+<hr />
+
+<h3 id="srcsimeventqhh"><code class="language-plaintext highlighter-rouge">src/sim/eventq.hh</code></h3>
+
+<p>Lines 863 and 865 — function declarations:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="c1">// remove head event</span>
+<span class="n">Event</span> <span class="o">*</span><span class="nf">popNextEvent</span><span class="p">();</span>
+
+<span class="c1">// does everything that serviceOne would do</span>
+<span class="n">Event</span> <span class="o">*</span><span class="nf">executePoppedEvent</span><span class="p">(</span><span class="n">Event</span> <span class="o">*</span><span class="n">event</span><span class="p">);</span>
+</code></pre></div></div>
+
+<hr />
+
+<h3 id="srcsimeventqcc"><code class="language-plaintext highlighter-rouge">src/sim/eventq.cc</code></h3>
+
+<p>Lines 55–56 — create a dictionary for a lock per event and a lock for the table as a whole. This is meant to prevent multiple events from trying to create locks at the same time.</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">std</span><span class="o">::</span><span class="n">mutex</span> <span class="n">mutexTableLock</span><span class="p">;</span>
+<span class="n">std</span><span class="o">::</span><span class="n">unordered_map</span><span class="o">&lt;</span><span class="n">std</span><span class="o">::</span><span class="n">string</span><span class="p">,</span> <span class="n">std</span><span class="o">::</span><span class="n">mutex</span><span class="o">&gt;</span> <span class="n">eventLocksTable</span><span class="p">;</span>
+</code></pre></div></div>
+
+<p>Lines 58–66 — retrieve or create a mutex for a given event:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">std</span><span class="o">::</span><span class="n">mutex</span> <span class="o">&amp;</span><span class="n">getEventLock</span><span class="p">(</span><span class="k">const</span> <span class="n">std</span><span class="o">::</span><span class="n">string</span> <span class="o">&amp;</span><span class="n">name</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="c1">// unlock guard when done adding event to map</span>
+    <span class="n">std</span><span class="o">::</span><span class="n">lock_guard</span><span class="o">&lt;</span><span class="n">std</span><span class="o">::</span><span class="n">mutex</span><span class="o">&gt;</span> <span class="n">guard</span><span class="p">(</span><span class="n">mutexTableLock</span><span class="p">);</span>
+    <span class="k">auto</span> <span class="n">result</span> <span class="o">=</span> <span class="n">eventLocksTable</span><span class="p">.</span><span class="n">try_emplace</span><span class="p">(</span><span class="n">name</span><span class="p">);</span>
+    <span class="k">return</span> <span class="n">result</span><span class="p">.</span><span class="n">first</span><span class="o">-&gt;</span><span class="n">second</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Lines 293–294 — acquire the event’s mutex and make it unlock once the event is done running:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">std</span><span class="o">::</span><span class="n">mutex</span> <span class="o">&amp;</span><span class="n">eventLock</span> <span class="o">=</span> <span class="n">getEventLock</span><span class="p">(</span><span class="n">event</span><span class="o">-&gt;</span><span class="n">name</span><span class="p">());</span>
+<span class="n">std</span><span class="o">::</span><span class="n">lock_guard</span><span class="o">&lt;</span><span class="n">std</span><span class="o">::</span><span class="n">mutex</span><span class="o">&gt;</span> <span class="n">eventGuard</span><span class="p">(</span><span class="n">eventLock</span><span class="p">);</span>
+</code></pre></div></div>
+
+<p>Lines 257–279 — first half of <code class="language-plaintext highlighter-rouge">serviceOne</code>, the part that manages the queue:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">Event</span> <span class="o">*</span>
+<span class="n">EventQueue</span><span class="o">::</span><span class="n">popNextEvent</span><span class="p">()</span>
+<span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">head</span> <span class="o">==</span> <span class="nb">NULL</span><span class="p">)</span>
+        <span class="k">return</span> <span class="nb">nullptr</span><span class="p">;</span>
+
+    <span class="o">--</span><span class="n">queuedEvents</span><span class="p">;</span>
+
+    <span class="n">Event</span> <span class="o">*</span><span class="n">event</span> <span class="o">=</span> <span class="n">head</span><span class="p">;</span>
+    <span class="n">Event</span> <span class="o">*</span><span class="n">next</span> <span class="o">=</span> <span class="n">head</span><span class="o">-&gt;</span><span class="n">nextInBin</span><span class="p">;</span>
+
+    <span class="n">event</span><span class="o">-&gt;</span><span class="n">flags</span><span class="p">.</span><span class="n">clear</span><span class="p">(</span><span class="n">Event</span><span class="o">::</span><span class="n">Scheduled</span><span class="p">);</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="n">next</span><span class="p">)</span> <span class="p">{</span>
+        <span class="n">next</span><span class="o">-&gt;</span><span class="n">nextBin</span> <span class="o">=</span> <span class="n">head</span><span class="o">-&gt;</span><span class="n">nextBin</span><span class="p">;</span>
+        <span class="n">head</span> <span class="o">=</span> <span class="n">next</span><span class="p">;</span>
+    <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+        <span class="n">head</span> <span class="o">=</span> <span class="n">head</span><span class="o">-&gt;</span><span class="n">nextBin</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="n">setCurTick</span><span class="p">(</span><span class="n">event</span><span class="o">-&gt;</span><span class="n">when</span><span class="p">());</span>
+
+    <span class="k">return</span> <span class="n">event</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Lines 281–309 — second half of <code class="language-plaintext highlighter-rouge">serviceOne</code>, the part that executes the event’s process:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="n">Event</span> <span class="o">*</span>
+<span class="n">EventQueue</span><span class="o">::</span><span class="n">executePoppedEvent</span><span class="p">(</span><span class="n">Event</span> <span class="o">*</span><span class="n">event</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">event</span><span class="p">)</span> <span class="p">{</span>
+        <span class="k">return</span> <span class="nb">NULL</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="n">event</span><span class="o">-&gt;</span><span class="n">squashed</span><span class="p">())</span> <span class="p">{</span>
+        <span class="c1">// setCurTick(event-&gt;when());</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="n">debug</span><span class="o">::</span><span class="n">Event</span><span class="p">)</span>
+            <span class="n">event</span><span class="o">-&gt;</span><span class="n">trace</span><span class="p">(</span><span class="s">"executed"</span><span class="p">);</span>
+
+        <span class="n">currEvent</span> <span class="o">=</span> <span class="n">event</span><span class="p">;</span>
+
+        <span class="n">std</span><span class="o">::</span><span class="n">mutex</span> <span class="o">&amp;</span><span class="n">eventLock</span> <span class="o">=</span> <span class="n">getEventLock</span><span class="p">(</span><span class="n">event</span><span class="o">-&gt;</span><span class="n">name</span><span class="p">());</span>
+        <span class="n">std</span><span class="o">::</span><span class="n">lock_guard</span><span class="o">&lt;</span><span class="n">std</span><span class="o">::</span><span class="n">mutex</span><span class="o">&gt;</span> <span class="n">eventGuard</span><span class="p">(</span><span class="n">eventLock</span><span class="p">);</span>
+
+        <span class="n">event</span><span class="o">-&gt;</span><span class="n">process</span><span class="p">();</span>
+
+        <span class="n">currEvent</span> <span class="o">=</span> <span class="nb">nullptr</span><span class="p">;</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="n">event</span><span class="o">-&gt;</span><span class="n">isExitEvent</span><span class="p">())</span> <span class="p">{</span>
+            <span class="n">assert</span><span class="p">(</span><span class="o">!</span><span class="n">event</span><span class="o">-&gt;</span><span class="n">flags</span><span class="p">.</span><span class="n">isSet</span><span class="p">(</span><span class="n">Event</span><span class="o">::</span><span class="n">Managed</span><span class="p">)</span> <span class="o">||</span>
+                   <span class="o">!</span><span class="n">event</span><span class="o">-&gt;</span><span class="n">flags</span><span class="p">.</span><span class="n">isSet</span><span class="p">(</span><span class="n">Event</span><span class="o">::</span><span class="n">IsMainQueue</span><span class="p">));</span> <span class="c1">// would be silly</span>
+
+            <span class="k">return</span> <span class="n">event</span><span class="p">;</span>
+        <span class="p">}</span>
+    <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+        <span class="n">event</span><span class="o">-&gt;</span><span class="n">flags</span><span class="p">.</span><span class="n">clear</span><span class="p">(</span><span class="n">Event</span><span class="o">::</span><span class="n">Squashed</span><span class="p">);</span>
+    <span class="p">}</span>
+
+    <span class="n">event</span><span class="o">-&gt;</span><span class="n">release</span><span class="p">();</span>
+
+    <span class="k">return</span> <span class="nb">NULL</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<hr />
+
+<h3 id="srcsimsimulatecc"><code class="language-plaintext highlighter-rouge">src/sim/simulate.cc</code></h3>
+
+<p>Lines 174–178 — struct that holds the event queue, mutex to protect access, and atomic flag to tell worker threads when to exit:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">struct</span> <span class="nc">multiThreads</span> <span class="p">{</span>
+    <span class="n">EventQueue</span> <span class="o">*</span><span class="n">eventq</span><span class="p">;</span>
+    <span class="n">std</span><span class="o">::</span><span class="n">mutex</span> <span class="n">lock</span><span class="p">;</span>
+    <span class="n">std</span><span class="o">::</span><span class="n">atomic</span><span class="o">&lt;</span><span class="kt">bool</span><span class="o">&gt;</span> <span class="n">stop</span><span class="p">{</span><span class="nb">false</span><span class="p">};</span>
+<span class="p">};</span>
+</code></pre></div></div>
+
+<p>Lines 180–234 — worker thread main loop.</p>
+
+<p>This attaches the thread to the event queue and keeps pulling events and running them. It locks the queue while checking if it is empty, then unlocks before executing. It stops once it hits an exit event.</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="kt">void</span>
+<span class="nf">simulationWorker</span><span class="p">(</span><span class="n">multiThreads</span> <span class="o">*</span><span class="n">shared</span><span class="p">,</span> <span class="kt">int</span> <span class="n">worker_id</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="n">std</span><span class="o">::</span><span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="s">"Worker thread "</span> <span class="o">&lt;&lt;</span> <span class="n">worker_id</span> <span class="o">&lt;&lt;</span> <span class="s">" running..."</span> <span class="o">&lt;&lt;</span> <span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
+
+    <span class="c1">// Found in eventq.hh; sets the thread-local pointer to the current event queue.</span>
+    <span class="c1">// This is for single thread, when eventq is a parameter to the function.</span>
+    <span class="c1">// curEventQueue(eventq);</span>
+
+    <span class="n">curEventQueue</span><span class="p">(</span><span class="n">shared</span><span class="o">-&gt;</span><span class="n">eventq</span><span class="p">);</span>
+
+    <span class="c1">// memory order relaxed is</span>
+    <span class="k">while</span> <span class="p">(</span><span class="o">!</span><span class="n">shared</span><span class="o">-&gt;</span><span class="n">stop</span><span class="p">.</span><span class="n">load</span><span class="p">())</span> <span class="p">{</span>
+        <span class="n">Event</span> <span class="o">*</span><span class="n">event</span> <span class="o">=</span> <span class="nb">nullptr</span><span class="p">;</span>
+
+        <span class="p">{</span>
+            <span class="c1">// take event queue lock</span>
+            <span class="n">std</span><span class="o">::</span><span class="n">lock_guard</span><span class="o">&lt;</span><span class="n">std</span><span class="o">::</span><span class="n">mutex</span><span class="o">&gt;</span> <span class="n">guard</span><span class="p">(</span><span class="n">shared</span><span class="o">-&gt;</span><span class="n">lock</span><span class="p">);</span>
+
+            <span class="c1">// std::cout &lt;&lt; "Work being done by" &lt;&lt; worker_id &lt;&lt; std::endl;</span>
+
+            <span class="k">if</span> <span class="p">(</span><span class="n">shared</span><span class="o">-&gt;</span><span class="n">eventq</span><span class="o">-&gt;</span><span class="n">empty</span><span class="p">())</span> <span class="p">{</span>
+                <span class="c1">// std::cout &lt;&lt; "Worker thread " &lt;&lt; worker_id</span>
+                <span class="c1">//           &lt;&lt; " sees an empty event queue." &lt;&lt; std::endl;</span>
+                <span class="k">break</span><span class="p">;</span>
+            <span class="p">}</span>
+
+            <span class="c1">// Optional full queue dump while debugging.</span>
+            <span class="c1">// shared-&gt;eventq-&gt;dump();</span>
+
+            <span class="c1">// this is WORKING simulate.cc line</span>
+            <span class="c1">// event = shared-&gt;eventq-&gt;serviceOne();</span>
+
+            <span class="c1">// this is for split serviceOne events (DOESNT WORK)</span>
+            <span class="n">event</span> <span class="o">=</span> <span class="n">shared</span><span class="o">-&gt;</span><span class="n">eventq</span><span class="o">-&gt;</span><span class="n">popNextEvent</span><span class="p">();</span>
+        <span class="p">}</span> <span class="c1">// queue lock is released</span>
+
+        <span class="c1">// testing with split serviceOne events (DOESNT WORK)</span>
+        <span class="n">Event</span> <span class="o">*</span><span class="n">exit_event</span> <span class="o">=</span> <span class="n">shared</span><span class="o">-&gt;</span><span class="n">eventq</span><span class="o">-&gt;</span><span class="n">executePoppedEvent</span><span class="p">(</span><span class="n">event</span><span class="p">);</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="n">exit_event</span> <span class="o">!=</span> <span class="nb">nullptr</span><span class="p">)</span> <span class="p">{</span>
+            <span class="n">shared</span><span class="o">-&gt;</span><span class="n">stop</span><span class="p">.</span><span class="n">store</span><span class="p">(</span><span class="nb">true</span><span class="p">);</span>
+            <span class="k">break</span><span class="p">;</span>
+        <span class="p">}</span>
+
+        <span class="c1">// this is WORKING simulate.cc line</span>
+        <span class="c1">// if (event != nullptr) {</span>
+        <span class="c1">//     shared-&gt;stop.store(true);</span>
+        <span class="c1">//     break;</span>
+        <span class="c1">// }</span>
+
+        <span class="c1">// this is for single thread when eventq is a parameter</span>
+        <span class="c1">// while (!eventq-&gt;empty()) {</span>
+        <span class="c1">//     Event *event = eventq-&gt;serviceOne();</span>
+        <span class="c1">//     if (event != NULL) {</span>
+        <span class="c1">//         break;</span>
+        <span class="c1">//     }</span>
+        <span class="c1">// }</span>
+
+        <span class="n">std</span><span class="o">::</span><span class="n">cout</span> <span class="o">&lt;&lt;</span> <span class="s">"Worker thread "</span> <span class="o">&lt;&lt;</span> <span class="n">worker_id</span> <span class="o">&lt;&lt;</span> <span class="s">" done."</span> <span class="o">&lt;&lt;</span> <span class="n">std</span><span class="o">::</span><span class="n">endl</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Lines 238–241 — starts thread using a helper function:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">static</span> <span class="n">std</span><span class="o">::</span><span class="kr">thread</span>
+<span class="nf">startSimulationWorker</span><span class="p">(</span><span class="n">multiThreads</span> <span class="o">*</span><span class="n">shared</span><span class="p">,</span> <span class="kt">int</span> <span class="n">worker_id</span><span class="p">)</span>
+<span class="p">{</span>
+    <span class="k">return</span> <span class="n">std</span><span class="o">::</span><span class="kr">thread</span><span class="p">(</span><span class="n">simulationWorker</span><span class="p">,</span> <span class="n">shared</span><span class="p">,</span> <span class="n">worker_id</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div></div>
+
+<p>Lines 320–339 — sets up worker threads, starts the workers, and joins them once they finish:</p>
+
+<div class="language-cpp highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">const</span> <span class="kt">int</span> <span class="n">num_workers</span> <span class="o">=</span> <span class="mi">1</span><span class="p">;</span>
+
+<span class="n">multiThreads</span> <span class="n">shared</span><span class="p">{</span><span class="n">getEventQueue</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span> <span class="p">{},</span> <span class="nb">false</span><span class="p">};</span>
+
+<span class="c1">// Dynamic array of thread objects; eventually pushes each worker to this.</span>
+<span class="n">std</span><span class="o">::</span><span class="n">vector</span><span class="o">&lt;</span><span class="n">std</span><span class="o">::</span><span class="kr">thread</span><span class="o">&gt;</span> <span class="n">worker_threads</span><span class="p">;</span>
+
+<span class="c1">// Capacity for the number of workers.</span>
+<span class="n">worker_threads</span><span class="p">.</span><span class="n">reserve</span><span class="p">(</span><span class="n">num_workers</span><span class="p">);</span>
+
+<span class="k">for</span> <span class="p">(</span><span class="kt">int</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="p">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">num_workers</span><span class="p">;</span> <span class="n">i</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+    <span class="kt">int</span> <span class="n">worker_id</span> <span class="o">=</span> <span class="n">next_worker_id</span><span class="p">.</span><span class="n">fetch_add</span><span class="p">(</span><span class="mi">1</span><span class="p">);</span>
+
+    <span class="c1">// New element to end of vector, stores each thread.</span>
+    <span class="n">worker_threads</span><span class="p">.</span><span class="n">emplace_back</span><span class="p">(</span><span class="n">startSimulationWorker</span><span class="p">(</span><span class="o">&amp;</span><span class="n">shared</span><span class="p">,</span> <span class="n">worker_id</span><span class="p">));</span>
+<span class="p">}</span>
+
+<span class="c1">// For each element in worker_threads, call each thread t.</span>
+<span class="k">for</span> <span class="p">(</span><span class="n">std</span><span class="o">::</span><span class="kr">thread</span> <span class="o">&amp;</span><span class="n">curr_thread</span> <span class="o">:</span> <span class="n">worker_threads</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">curr_thread</span><span class="p">.</span><span class="n">joinable</span><span class="p">())</span> <span class="p">{</span>
+        <span class="n">curr_thread</span><span class="p">.</span><span class="n">join</span><span class="p">();</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div></div>]]></content><author><name>Connor Wang</name></author><category term="connor wang" /><category term="parallel gem5" /><category term="semester in review" /><summary type="html"><![CDATA[This is a report of the research done by Connor Wang as an RA during the Spring 2026 semester.]]></summary></entry><entry><title type="html">Spring 2026 in Review</title><link href="http://localhost:4000/posts/2026/spring/semester-in-review-stevie/" rel="alternate" type="text/html" title="Spring 2026 in Review" /><published>2026-05-12T00:00:00+00:00</published><updated>2026-05-12T00:00:00+00:00</updated><id>http://localhost:4000/posts/2026/spring/stevie-end-of-semester</id><content type="html" xml:base="http://localhost:4000/posts/2026/spring/semester-in-review-stevie/"><![CDATA[<p>This is a report of the research done by Stevie Kim as an RA during the Spring 2026 semester.</p>
+
+<h1 id="project-title-cxip-list-a-cxl-aware-skip-list">Project Title: CXip List: A CXL-Aware Skip List</h1>
+
+<h2 id="description">Description</h2>
+
+<p>Modern workloads require systems that have access to both large and fast memory. However, developments in memory systems lag behind developments in compute, leading memory to be the primary bottleneck of such systems. One of the state-of-the-art solutions that can provide both large and fast memory is Compute Express Link (CXL), an open interconnect standard that allows for the attachment of remote memory modules to a system via IO, offering high bandwidth and low latency. Each memory module has their own latency, and thus systems that incorporate CXL have a memory topology where certain remote memory modules have lower latencies than other. Thus, to design a performant system for CXL systems, applications should use this topology for optimizations.</p>
+
+<p>This leads us to our main problem: current interfaces cannot distinguish between individual remote memory modules. Instead, they view all remote memory modules as one large node, as shown by the image below.</p>
+
+<p><img src="/images/blog-posts/zNUMA_interface.png" alt="zNUMA Interface" /></p>
+
+<p>Since we cannot distinguish between individual remote memory modules, we cannot design systems around the unique memory topology that CXL provides. Thus, applications running on CXL systems will have inefficiencies, as it is highly likely that memory accesses occur across individual remote nodes, which is proven to be unoptimal by prior literature.</p>
+
+<p>Thus, this project has two research goals: (1) to create a new interface in the <code class="language-plaintext highlighter-rouge">gem5</code> simulator for CXL systems that distinguishes between individual memory modules, and (2) to create <em>CXip List</em>, a skip list that is optimized for CXL systems. We hope that this work will provide the necessary tools and guidelines that can enable others to develop more CXL-aware applications.</p>
+
+<p>Current Progress: Stevie worked on this project throughout the Spring 2026 semester. He worked on implementing skip lists in <code class="language-plaintext highlighter-rouge">C++</code>, starting from a simple sequential implementation and moving to a concurrent implementation using locks. He also gave a 15-minute talk about this project at the SoCal Programming Languages and Systems Workshop in February.</p>]]></content><author><name>Steven Kim</name></author><category term="steven kim" /><category term="cxip list" /><category term="semester in review" /><summary type="html"><![CDATA[This is a report of the research done by Stevie Kim as an RA during the Spring 2026 semester.]]></summary></entry></feed>
