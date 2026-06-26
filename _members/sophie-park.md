@@ -3,7 +3,7 @@ name:        "Sophie Park"
 firstname:   "Sophie"
 role:        "student"
 institution: "Pomona College"
-gradyear:    "2027"
+gradyear:    "2028"
 graduation:  "May 31, 2028"
 joined:      "Summer 2026"
 project:     secure-cxl
